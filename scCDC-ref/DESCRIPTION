@@ -1,0 +1,24 @@
+Package: scCDC
+Type: Package
+Title: Single-cell (-nucleus) RNA Sequencing Data Contamination
+        Detection and Correction
+Version: 1.4
+Date: 2024-09-23
+Author: Weijian Wang, Yihui Cen, Zezhen Lu
+Maintainer: Weijian Wang <weijianwang@g.ucla.edu>
+Description: This package uses entropy theory to detect contaminated genes and perform 
+             decontamination process using Youden index-based Method. It offers a fast 
+             procedure to allow users to targets contaminations and remove them.
+License: GPL (>= 2)
+Encoding: UTF-8
+LazyData: true
+Imports: Rcpp (>= 1.0.10)
+Depends: R (>= 3.5.0), Seurat (>= 4.0.2), ddpcr (>= 1.15), dplyr (>=
+        1.0.5), ggplot2 (>= 3.3.5), pbapply (>= 1.4-3), ggrepel (>=
+        0.9.1), Matrix (>= 1.5-1), pROC (>= 1.18.0), knitr (>= 1.37),
+        tidyr (>= 1.2.1)
+LinkingTo: Rcpp
+RoxygenNote: 7.2.3
+VignetteBuilder: knitr
+NeedsCompilation: yes
+Packaged: 2025-01-15 18:48:15 UTC; weijianwang
