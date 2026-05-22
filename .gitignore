@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+scCDC-ref/
+tests/_r_out/
+*.Rout
+Rplots.pdf

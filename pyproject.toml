@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pysccdc"
+version = "0.1.0"
+description = "Pure-Python port of the R package scCDC — entropy-based, gene-specific ambient-RNA contamination detection and correction for scRNA-seq / snRNA-seq."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Zehua Zeng", email = "starlitnightly@163.com" },
+]
+keywords = [
+    "scRNA-seq", "snRNA-seq", "ambient-RNA", "contamination", "decontamination",
+    "scCDC", "single-cell", "entropy", "GCG", "Youden-index", "anndata",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.10",
+    "pandas>=1.5",
+    "anndata>=0.8",
+    "scikit-learn>=1.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/omicverse/py-sccdc"
+Repository = "https://github.com/omicverse/py-sccdc"
+Issues = "https://github.com/omicverse/py-sccdc/issues"
+"Upstream R package" = "https://github.com/ZJU-UoE-CCW-LAB/scCDC"
+"Upstream (omicverse)" = "https://github.com/Starlitnightly/omicverse"
+
+[tool.setuptools.packages.find]
+include = ["pysccdc*"]
+exclude = ["tests*", "examples*", "scCDC-ref*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+    "ignore::RuntimeWarning",
+]
