@@ -3,9 +3,9 @@
 A **pure-Python re-implementation of [scCDC](https://github.com/ZJU-UoE-CCW-LAB/scCDC)** (Wang et al., *Genome Biology* 2024) for entropy-based, **gene-specific** ambient-RNA contamination detection and correction in single-cell / single-nucleus RNA-seq data.
 
 - AnnData-native — drop-in for the scanpy / omicverse ecosystem
-- **No `rpy2`**, no R install — the Shannon-entropy core, the bootstrapped smoothing-spline curve fit, the normal-tail FDR, the AUROC and the Youden-index thresholding are all implemented directly in NumPy/SciPy
+- **No `rpy2`**, no R install — the Shannon-entropy core, R's `smooth.spline`, R's random number generator and `sample()`, `pnorm`, the FDR, pROC's AUROC and the Youden-index thresholding are all implemented directly in NumPy/SciPy
 - Same function surface as the R workflow (`ContaminationDetection` → `ContaminationQuantification` → `ContaminationCorrection`)
-- Bit-for-bit reproducibility against the R reference for the deterministic core — per-gene/per-cluster entropy and the corrected count matrix match scCDC exactly (see `tests/test_r_parity.py`)
+- Same results as R scCDC 1.4, including the bootstrapped curve fit: same GCGs, same entropy divergences, same corrected counts (see below), 11–22× faster
 
 Unlike DecontX, SoupX, CellBender or scAR — which correct *every* gene — scCDC detects the small set of **Global Contamination-causing Genes (GCGs)** and corrects only those, avoiding the over-correction of lowly / non-contaminating genes (many of which are real cell-type markers). It needs **no empty-droplet data**.
 
@@ -23,7 +23,7 @@ or, from a checkout:
 pip install -e .
 ```
 
-Dependencies: `numpy`, `scipy`, `pandas`, `anndata`, `scikit-learn`. No R, no `rpy2`.
+Dependencies: `numpy`, `scipy`, `pandas`, `anndata`. No R, no `rpy2`.
 
 ## How it works
 
@@ -88,21 +88,40 @@ youden_threshold(neg_counts, pos_counts)
 | `ContaminationCorrection` | `ContaminationCorrection` | Youden-threshold correction of the GCGs only |
 | `generate_curve` | `generate_curve` | fit one cluster's entropy-vs-expression curve |
 | `vector_entropy` / `matrix_entropy` | `VectorToEntropy` / `MatrixToEntropy` | Shannon entropy of count distributions |
-| `SmoothSpline` / `smooth_spline` | `smooth.spline` | penalized cubic B-spline |
+| `SmoothSpline` / `smooth_spline` | `smooth.spline` | R's smoothing spline and `predict` |
 | `simple_roc` / `youden_threshold` | `simple_roc` / `Cal_thres` | AUROC and Youden-index cut point |
 | `datasets.simulate_contaminated` | — | synthetic clustered counts with spiked GCGs |
 
 ## Reproducing R results exactly
 
-`tests/` runs the **same** synthetic dataset through the R package scCDC 1.4 (`tests/r_reference_driver.R`) and `pysccdc`, and asserts agreement:
+scCDC fits each cluster's entropy-vs-expression curve ten times on 80% of the genes, drawn with R's
+`sample()`, using `smooth.spline(spar = 1)`. pysccdc ports every step of that path:
 
-* **per-gene / per-cluster Shannon entropy — bit-exact** (the Rcpp `MatrixToEntropy` reduces to a deterministic `numpy.bincount`);
-* **detected GCG list — identical** on the deliberately-spiked synthetic dataset;
-* **corrected count matrix — bit-exact** (the Youden-threshold path is fully deterministic);
-* **contamination ratio — bit-exact**;
-* **per-gene entropy divergence — Pearson r > 0.99**.
+* R's Mersenne-Twister seeding and `sample()` (rejection sampling), so the same genes are drawn;
+* `smooth.spline` operation for operation — tie pooling, knot choice (`.nknots.smspl`, `seq.int`),
+  the `X'WX` and penalty bands of `sbart.c`, the `spar → lambda` ratio, the LINPACK banded Cholesky
+  solve and `bvalue`, with R's linear extrapolation;
+* `mean`, `sd` and `rowMeans` in long double, `round(x, 3)`, `pnorm` (Cody's algorithm), `p.adjust`,
+  and C-library `log`/`log2`, as R computes them;
+* pROC's ROC table, trapezoid AUROC and the first Youden maximum, and Seurat 5's `AverageExpression`
+  (mean of `expm1` of the log-normalized data) for ordering the clusters.
 
-**Unavoidable difference.** The entropy-vs-expression curve is fit by a *bootstrapped* smoothing spline (10 rounds, 80% gene resampling). Two things differ from R: (i) R's `sample()` (Mersenne-Twister) and NumPy's PCG64 draw different bootstrap subsets, and (ii) R's `smooth.spline` uses an internal knot-thinning heuristic and GCV machinery that the scipy penalized cubic B-spline reproduces only up to ~1e-3 in entropy units. These propagate into the entropy *divergence* (hence r > 0.99 rather than bit-exact), and on a real noisy dataset can move a few borderline genes across the FDR cutoff in the GCG list — but **not** into the corrected matrix, which matches exactly given the same GCG list. Fix `random_state` for reproducible Python runs. The `examples/compare_R_vs_Python.ipynb` notebook demonstrates this on real PBMC 3k data.
+**Seed.** R scCDC does not depend on the user's `set.seed`: before the curves are fitted it subsets
+the Seurat object, and Seurat's `subset` calls `WhichCells(seed = 1)`, which runs `set.seed(1)`.
+`ContaminationDetection(random_state=1)` (the default) therefore gives R's result; other values give
+other bootstrap draws.
+
+`tests/test_r_reference.py` compares with stored scCDC 1.4 output on the bundled synthetic dataset
+(entropy, divergences, GCGs, corrected counts and contamination ratio, all identical);
+`tests/test_r_parity.py` runs R live (`PYSCCDC_RSCRIPT=/path/to/Rscript`). The spline solve uses
+BLAS `ddot`; with an OpenBLAS whose kernels use FMA instructions R's divergences differ from
+pysccdc's in the last ~12 digits, which leaves GCGs and corrected counts unchanged.
+
+On four 10x human–mouse mixtures (1,046–12,820 cells), pysccdc found the same GCGs as scCDC 1.4, in
+the same order, and returned identical corrected counts; it ran 11–22× faster on one thread.
+Scripts and figure: [`report/`](report/). scCDC needs fewer than 75% of the genes with zero counts
+in every analysed cluster (otherwise `smooth.spline` stops, in R and in pysccdc); filter genes
+detected in few cells first.
 
 ## Examples
 
@@ -124,7 +143,7 @@ Developed **upstream** in [`omicverse`](https://github.com/Starlitnightly/omicve
 
 If you use this package, please cite the original scCDC paper:
 
-> Wang, W. *et al.* **scCDC: a computational method for gene-specific contamination detection and correction in single-cell and single-nucleus RNA-seq data.** *Genome Biology* **25**, 122 (2024).
+> Wang, W., Cen, Y., Lu, Z. *et al.* **scCDC: a computational method for gene-specific contamination detection and correction in single-cell and single-nucleus RNA-seq data.** *Genome Biology* **25**, 136 (2024). https://doi.org/10.1186/s13059-024-03284-w
 
 and acknowledge omicverse / this repo for the Python port.
 

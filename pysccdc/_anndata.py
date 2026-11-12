@@ -1,8 +1,8 @@
-"""AnnData <-> dense-matrix glue used across :mod:`pysccdc`.
+"""AnnData glue used across :mod:`pysccdc`.
 
-scCDC reasons in the Seurat layout (genes x cells); AnnData stores
-cells x genes.  These helpers convert and pick out the count layer /
-cluster labels so the rest of the package can work with plain NumPy.
+scCDC reasons in the Seurat layout (genes x cells); AnnData stores cells x genes. These helpers
+return the count layer as a sparse genes x cells matrix and the cluster labels with their level
+order (R iterates over ``levels(Idents(object))``).
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 __all__ = ["counts_matrix", "get_clusters", "to_dense"]
 
@@ -21,52 +22,42 @@ def to_dense(x) -> np.ndarray:
     return np.asarray(x, dtype=np.float64)
 
 
-def counts_matrix(
-    adata, layer: Optional[str] = None
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract the (genes x cells) count matrix from an AnnData.
-
-    Parameters
-    ----------
-    adata
-        :class:`anndata.AnnData` with raw counts.
-    layer
-        ``adata.layers`` key; ``None`` uses ``adata.X``.
-
-    Returns
-    -------
-    counts : ndarray
-        Dense ``genes x cells`` matrix (transposed from AnnData).
-    genes : ndarray
-        ``var_names``.
-    cells : ndarray
-        ``obs_names``.
-    """
+def counts_matrix(adata, layer: Optional[str] = None) -> Tuple[sp.csr_matrix, np.ndarray, np.ndarray]:
+    """The (genes x cells) count matrix of an AnnData, as a CSR matrix, with gene and cell names."""
     mat = adata.layers[layer] if layer is not None else adata.X
-    counts = to_dense(mat).T  # genes x cells
-    genes = np.asarray(adata.var_names)
-    cells = np.asarray(adata.obs_names)
-    return counts, genes, cells
+    counts = sp.csr_matrix(sp.csc_matrix(mat, dtype=np.float64).T)
+    return counts, np.asarray(adata.var_names), np.asarray(adata.obs_names)
 
 
-def get_clusters(adata, cluster_key: Optional[str] = None) -> np.ndarray:
-    """Return the per-cell cluster labels as a string array.
+def _levels(ser: pd.Series) -> list:
+    if isinstance(ser.dtype, pd.CategoricalDtype):
+        return [str(c) for c in ser.cat.categories]
+    u = pd.unique(ser.astype(str))
+    try:
+        return [str(v) for v in sorted(u, key=int)]
+    except ValueError:
+        return sorted(u)
 
-    When ``cluster_key`` is ``None`` the first categorical/object column
-    of ``adata.obs`` is used.
+
+def get_clusters(adata, cluster_key: Optional[str] = None, return_levels: bool = False):
+    """Per-cell cluster labels as strings (and, with ``return_levels``, the level order).
+
+    When ``cluster_key`` is ``None`` the first categorical/object column of ``adata.obs`` is used.
+    Categorical columns keep their category order; other labels are ordered numerically when they
+    all look like integers, else alphabetically.
     """
     if cluster_key is None:
         for col in adata.obs.columns:
             ser = adata.obs[col]
-            if isinstance(ser.dtype, pd.CategoricalDtype) or \
-                    ser.dtype == object:
+            if isinstance(ser.dtype, pd.CategoricalDtype) or ser.dtype == object:
                 cluster_key = col
                 break
         if cluster_key is None:
-            raise ValueError(
-                "No categorical column found in adata.obs; "
-                "pass cluster_key explicitly."
-            )
+            raise ValueError("No categorical column found in adata.obs; pass cluster_key explicitly.")
     if cluster_key not in adata.obs.columns:
         raise KeyError(f"cluster_key '{cluster_key}' not in adata.obs.")
-    return adata.obs[cluster_key].astype(str).to_numpy()
+    ser = adata.obs[cluster_key]
+    labels = ser.astype(str).to_numpy()
+    if return_levels:
+        return labels, _levels(ser)
+    return labels
