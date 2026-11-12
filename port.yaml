@@ -11,21 +11,21 @@ domain: single-cell   # single-cell | spatial | trajectory | bulk | proteomics |
 upstream:
   name: "scCDC"
   source: "GitHub"   # CRAN | Bioconductor | GitHub | other
-  version: null   # TODO: upstream version the parity test was run against
+  version: "1.4"
   url: "https://github.com/ZJU-UoE-CCW-LAB/scCDC"
-  license: null   # TODO: upstream R package license (GPL-3, MIT, Artistic-2.0, …)
-  citation: "Wang, W. et al. scCDC: a computational method for gene-specific contamination detection and correction in single-cell and single-nucleus RNA-seq data. Genome Biology 25, 122 (2024)."
+  license: "GPL (>= 2)"
+  citation: "Wang W, Cen Y, Lu Z, et al. scCDC: a computational method for gene-specific contamination detection and correction in single-cell and single-nucleus RNA-seq data. Genome Biology 25, 136 (2024). doi:10.1186/s13059-024-03284-w"
 omicverse:
-  module: null   # TODO: e.g. ov.single.pyDoubletFinder, or leave null
+  module: "ov.pp.ambient.remove_ambient(method='sccdc')"
   since: null
 parity:
-  status: unverified   # pass | partial | unverified
-  algorithm_class: null   # TODO: see omicverse-rebuildr/PARITY_TAXONOMY.md
-  metric: null   # TODO: pearson | spearman | ari | jaccard | max_abs_diff | …
-  threshold: null
-  value: null   # TODO: measured value on the canonical fixture
-  fixture: null
-  test: null
+  status: pass   # R RNG + sample() + smooth.spline ported; scCDC always fits from set.seed(1)
+  algorithm_class: stochastic-seeded
+  metric: GCG list and order; corrected counts max_abs_diff; entropy divergence max_abs_diff
+  threshold: "same GCGs; counts identical; divergence < 1e-9"
+  value: "4 10x human-mouse mixtures: same GCGs, counts identical, divergence ~1e-11 (0 with a non-FMA BLAS)"
+  fixture: "10x hgmm_1k_v3 / 5k_v3 / 6k / 12k (shared clusters, genes in >= 3 cells)"
+  test: "tests/test_r_reference.py (stored R output); tests/test_r_parity.py (live R, PYSCCDC_RSCRIPT)"
 artifacts:
   audit: null
   report: null

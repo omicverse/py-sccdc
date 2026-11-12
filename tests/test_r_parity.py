@@ -1,26 +1,28 @@
-"""R-parity tests — pysccdc vs the R package scCDC.
+"""R-parity tests — pysccdc vs the R package scCDC (live R).
 
 The R driver (:file:`r_reference_driver.R`) runs scCDC 1.4 on the *same*
 synthetic clustered count matrix that :func:`pysccdc.datasets.simulate_contaminated`
 produces (4 clusters x 200 cells, 120 genes, 4 deliberately-spiked
-contaminating genes).  Both sides therefore analyse identical input.
+contaminating genes), after ``set.seed(R_SEED)``. R's bootstrap ignores that
+seed -- Seurat's ``subset`` calls ``WhichCells(seed = 1)``, so scCDC always fits
+from ``set.seed(1)`` -- and pysccdc's default ``random_state=1`` draws the same
+genes, so the comparisons are exact:
 
-We compare:
+* per-gene / per-cluster **Shannon entropy** — identical;
+* the detected **GCG list** and its order — identical;
+* the per-gene **entropy divergence** — equal to 1e-9 (bit-identical when
+  R's BLAS does not use FMA instructions; OpenBLAS' FMA kernels change the
+  last bits of the spline solve);
+* the **corrected count matrix** and thresholds — identical;
+* the dataset **contamination ratio** — identical.
 
-* per-gene / per-cluster **Shannon entropy** — bit-exact (the Rcpp
-  ``MatrixToEntropy`` reduces to a deterministic ``bincount``);
-* the detected **GCG list** — must match exactly;
-* the per-gene **entropy divergence** — Pearson r > 0.99 (the bootstrap
-  uses a different RNG and ``smooth.spline`` differs slightly from the
-  scipy penalized B-spline; see the README);
-* the **corrected count matrix** — bit-exact for the deterministic
-  Youden-threshold path;
-* the dataset **contamination ratio** — bit-exact.
-
-Tests skip gracefully when the CMAP R env or scCDC is unavailable.
+Set ``PYSCCDC_RSCRIPT`` to an ``Rscript`` with scCDC installed (default: the
+``Rscript`` on ``PATH``); the tests skip when it is unavailable.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import warnings
 from pathlib import Path
@@ -28,7 +30,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from scipy.stats import pearsonr
 
 import pysccdc as cd
 from pysccdc._anndata import counts_matrix, get_clusters
@@ -38,11 +39,11 @@ warnings.filterwarnings("ignore")
 
 HERE = Path(__file__).parent
 R_DRIVER = HERE / "r_reference_driver.R"
-RSCRIPT = "/scratch/users/steorra/env/CMAP/bin/Rscript"
+RSCRIPT = os.environ.get("PYSCCDC_RSCRIPT") or shutil.which("Rscript")
 
 
 def _r_available() -> bool:
-    if not R_DRIVER.exists() or not Path(RSCRIPT).exists():
+    if not R_DRIVER.exists() or not RSCRIPT or not Path(RSCRIPT).exists():
         return False
     try:
         out = subprocess.run(
@@ -56,10 +57,36 @@ def _r_available() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _r_available(),
-    reason="CMAP R env or scCDC not installed.",
+    reason="Rscript with scCDC not available (set PYSCCDC_RSCRIPT).",
 )
 
-RANDOM_STATE = 0
+RANDOM_STATE = 0      # the simulated data
+R_SEED = 0            # set.seed() before the R calls; scCDC resets it to 1
+
+
+def run_r_reference(sim_adata, out_dir: Path, seed: int = R_SEED) -> Path:
+    """Run the R driver on ``sim_adata``; outputs land in ``out_dir``."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    counts_csv = out_dir / "counts.csv"
+    clusters_csv = out_dir / "clusters.csv"
+    pd.DataFrame(sim_adata.X.T.astype(int), index=sim_adata.var_names,
+                 columns=sim_adata.obs_names).to_csv(counts_csv)
+    pd.DataFrame({"cell": sim_adata.obs_names,
+                  "cluster": sim_adata.obs["cluster"].astype(str)}).to_csv(clusters_csv, index=False)
+    res = subprocess.run([RSCRIPT, str(R_DRIVER), str(counts_csv), str(clusters_csv), str(out_dir), str(seed)],
+                         capture_output=True, text=True, timeout=1200)
+    if res.returncode != 0:
+        pytest.skip(f"R reference driver failed:\n{res.stderr[-2000:]}")
+    counts_csv.unlink()
+    clusters_csv.unlink()
+    return out_dir
+
+
+def read_table(out_dir: Path, name: str, extra=()):
+    genes = (out_dir / "genes.txt").read_text().split()
+    cols = (out_dir / "clusters.txt").read_text().split() + list(extra)
+    v = np.fromfile(out_dir / name).reshape(len(cols), len(genes)).T
+    return pd.DataFrame(v, index=genes, columns=cols)
 
 
 @pytest.fixture(scope="module")
@@ -71,53 +98,24 @@ def sim_adata():
 @pytest.fixture(scope="module")
 def r_reference(tmp_path_factory, sim_adata):
     """Run the R scCDC reference once on the synthetic dataset."""
-    out_dir = tmp_path_factory.mktemp("sccdc_R")
-    counts_csv = out_dir / "counts.csv"
-    clusters_csv = out_dir / "clusters.csv"
-
-    counts = pd.DataFrame(
-        sim_adata.X.T.astype(int),
-        index=sim_adata.var_names,
-        columns=sim_adata.obs_names,
-    )
-    counts.to_csv(counts_csv)
-    pd.DataFrame(
-        {"cell": sim_adata.obs_names,
-         "cluster": sim_adata.obs["cluster"].astype(str)}
-    ).to_csv(clusters_csv, index=False)
-
-    res = subprocess.run(
-        [RSCRIPT, str(R_DRIVER), str(counts_csv),
-         str(clusters_csv), str(out_dir)],
-        capture_output=True, text=True, timeout=1200,
-    )
-    if res.returncode != 0:
-        pytest.skip(f"R reference driver failed:\n{res.stderr[-2000:]}")
-    return out_dir
+    return run_r_reference(sim_adata, tmp_path_factory.mktemp("sccdc_R"))
 
 
 @pytest.fixture(scope="module")
 def py_detection(sim_adata):
     return cd.ContaminationDetection(
-        sim_adata, cluster_key="cluster", min_cell=50,
-        random_state=RANDOM_STATE, return_full=True,
+        sim_adata, cluster_key="cluster", min_cell=50, return_full=True,
     )
 
 
 # ----------------------------------------------------------------------
 def test_entropy_bit_exact(r_reference, sim_adata):
-    """Shannon entropy of count distributions matches R to machine eps."""
-    r_ent = pd.read_csv(r_reference / "entropy.csv", index_col=0)
+    """Shannon entropy of count distributions is identical to R."""
+    r_ent = read_table(r_reference, "entropy.bin")
     counts, genes, _ = counts_matrix(sim_adata)
     labels = np.asarray(get_clusters(sim_adata, "cluster"))
-    py_ent = pd.DataFrame(
-        {cl: matrix_entropy(counts[:, labels == cl]) for cl in r_ent.columns},
-        index=genes,
-    )
-    diff = np.abs(
-        r_ent.values - py_ent.loc[r_ent.index, r_ent.columns].values
-    ).max()
-    assert diff < 1e-9, f"entropy max abs diff {diff:.2e}"
+    py_ent = pd.DataFrame({cl: matrix_entropy(counts[:, labels == cl]) for cl in r_ent.columns}, index=genes)
+    assert np.array_equal(r_ent.values, py_ent.loc[r_ent.index, r_ent.columns].values)
 
 
 def test_detected_gcgs_match(r_reference, py_detection):
@@ -127,6 +125,7 @@ def test_detected_gcgs_match(r_reference, py_detection):
     )
     py_gcgs = set(py_detection["GCGs"])
     assert py_gcgs == r_gcgs, f"R={sorted(r_gcgs)} PY={sorted(py_gcgs)}"
+    assert (r_reference / "gcgs.txt").read_text().split() == py_detection["GCGs"]
 
 
 def test_all_spiked_genes_detected(r_reference, py_detection, sim_adata):
@@ -138,31 +137,11 @@ def test_all_spiked_genes_detected(r_reference, py_detection, sim_adata):
     assert truth <= py_gcgs
 
 
-def test_entropy_divergence_correlates(r_reference, py_detection):
-    """Per-gene entropy divergence agrees with R (Pearson r > 0.99)."""
-    r_dist = pd.read_csv(r_reference / "distance.csv", index_col=0)
-    py_dist = py_detection["all_distance"]
-    cm = r_dist.index.intersection(py_dist.index)
-    cols = [c for c in r_dist.columns
-            if c in py_dist.columns and c != "mean_distance"]
-    rv = r_dist.loc[cm, cols].to_numpy().ravel()
-    pv = py_dist.loc[cm, cols].to_numpy().ravel()
-    mask = np.isfinite(rv) & np.isfinite(pv)
-    rho, _ = pearsonr(rv[mask], pv[mask])
-    assert rho > 0.99, f"entropy divergence Pearson r = {rho:.5f}"
-
-
-def test_mean_distance_ordering(r_reference, py_detection):
-    """GCG mean entropy divergence is large and well-correlated with R."""
-    r_dist = pd.read_csv(r_reference / "distance.csv", index_col=0)
-    py_dist = py_detection["all_distance"]
-    gcgs = py_detection["GCGs"]
-    rv = r_dist.loc[gcgs, "mean_distance"].to_numpy()
-    pv = py_dist.loc[gcgs, "mean_distance"].to_numpy()
-    rho, _ = pearsonr(rv, pv)
-    assert rho > 0.9, f"GCG mean_distance r = {rho:.4f}"
-    # GCGs should rank near the top of the full divergence table
-    assert (py_dist.loc[gcgs, "mean_distance"] > 0).all()
+def test_entropy_divergence_matches(r_reference, py_detection):
+    """Per-gene, per-cluster entropy divergence and its mean equal R's."""
+    r_dist = read_table(r_reference, "distance.bin", extra=["mean_distance"])
+    py_dist = py_detection["all_distance"].loc[r_dist.index, r_dist.columns]
+    np.testing.assert_allclose(py_dist.to_numpy(), r_dist.to_numpy(), rtol=0, atol=1e-9)
 
 
 def test_corrected_matrix_matches(r_reference, sim_adata, py_detection):
@@ -173,7 +152,7 @@ def test_corrected_matrix_matches(r_reference, sim_adata, py_detection):
     )
     r_corr = pd.read_csv(r_reference / "corrected.csv", index_col=0)
     py_corr = pd.DataFrame(
-        cor.layers["Corrected"].T,
+        np.asarray(cor.layers["Corrected"]).T,
         index=sim_adata.var_names, columns=sim_adata.obs_names,
     )
     cm = r_corr.index.intersection(py_corr.index)
@@ -195,7 +174,7 @@ def test_correction_thresholds_match(r_reference, sim_adata, py_detection):
     ).set_index("gene")["threshold"]
     py_thr = cor.uns["sccdc"]["thresholds"]
     for g in gcgs:
-        assert round(py_thr[g]) == int(r_thr[g]), (
+        assert np.rint(py_thr[g]) == int(r_thr[g]), (
             f"{g}: PY round({py_thr[g]:.3f})={round(py_thr[g])} "
             f"vs R {int(r_thr[g])}"
         )
@@ -208,6 +187,6 @@ def test_contamination_ratio_matches(r_reference, sim_adata, py_detection):
     py_ratio = cd.ContaminationQuantification(
         sim_adata, py_detection["GCGs"], cluster_key="cluster"
     )
-    assert abs(py_ratio - r_ratio) < 1e-6, (
+    assert py_ratio == r_ratio, (
         f"contamination ratio PY={py_ratio:.8f} R={r_ratio:.8f}"
     )

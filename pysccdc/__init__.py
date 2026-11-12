@@ -21,7 +21,7 @@ The pipeline:
    subtract (floored at zero); non-GCGs are untouched.
 
 All functions are AnnData-friendly and depend only on
-numpy / scipy / pandas / anndata / scikit-learn.
+numpy / scipy / pandas / anndata.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from .detection import ContaminationDetection, generate_curve
 from .entropy import matrix_entropy, vector_entropy
 from .spline import SmoothSpline, smooth_spline
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "ContaminationDetection",
